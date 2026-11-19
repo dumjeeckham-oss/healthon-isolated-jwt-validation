@@ -1,6 +1,12 @@
 name: HealthON isolated JWT validation (2B-0-FIX2 candidate)
 on:
   workflow_dispatch:
+    inputs:
+      allow_runtime:
+        description: Explicit approval for this isolated runtime
+        required: true
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -11,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      PROJECT: healthon-phase3-3b-fix2
+      PROJECT: healthon-isolated-jwt-validation-2a
       FILE: harness/docker-compose.yml
     steps:
       - uses: actions/checkout@v4
@@ -20,13 +26,28 @@ jobs:
       - name: Preflight
         run: python harness/scripts/preflight.py
       - name: Approval gate
-        run: test "${ALLOW_RUNTIME:-}" = true || { echo 'RUNTIME APPROVAL REQUIRED'; exit 2; }
+        env:
+          ALLOW_RUNTIME: ${{ inputs.allow_runtime }}
+        run: |
+          test "$ALLOW_RUNTIME" = "true" || {
+            echo 'RUNTIME APPROVAL REQUIRED'
+            exit 2
+          }
       - name: Generate runtime-only secrets
         run: |
           echo "JWT_SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" >> "$GITHUB_ENV"
           echo "GOTRUE_OPERATOR_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" >> "$GITHUB_ENV"
+          USER_A_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
+          USER_B_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
+          test "$USER_A_PASSWORD" != "$USER_B_PASSWORD"
+          printf 'USER_A_PASSWORD=%s\nUSER_B_PASSWORD=%s\n' "$USER_A_PASSWORD" "$USER_B_PASSWORD" >> "$GITHUB_ENV"
+          echo "::add-mask::$USER_A_PASSWORD"
+          echo "::add-mask::$USER_B_PASSWORD"
       - name: Compose config and start
-        run: docker compose -p "$PROJECT" -f "$FILE" config --quiet && docker compose -p "$PROJECT" -f "$FILE" up -d --wait
+        run: |
+          docker compose -p "$PROJECT" -f "$FILE" config --quiet
+          docker compose -p "$PROJECT" -f "$FILE" up -d --wait
+          echo 'RUNTIME_STARTED=true' >> "$GITHUB_ENV"
       - name: Apply bootstrap and baseline function
         run: |
           docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/bootstrap.sql
@@ -36,8 +57,6 @@ jobs:
           AUTH_URL: http://127.0.0.1:55999
           USER_A_EMAIL: user-a@example.invalid
           USER_B_EMAIL: user-b@example.invalid
-          USER_A_PASSWORD: ${{ secrets.LOCAL_USER_A_PASSWORD }}
-          USER_B_PASSWORD: ${{ secrets.LOCAL_USER_B_PASSWORD }}
         run: python harness/scripts/bootstrap_users.py
       - name: Before JWT test
         env:
@@ -46,8 +65,6 @@ jobs:
           TEST_PHASE: before
           USER_A_EMAIL: user-a@example.invalid
           USER_B_EMAIL: user-b@example.invalid
-          USER_A_PASSWORD: ${{ secrets.LOCAL_USER_A_PASSWORD }}
-          USER_B_PASSWORD: ${{ secrets.LOCAL_USER_B_PASSWORD }}
         run: python tests/test_real_jwt_rpc.py
       - name: Reset and assert clean state
         run: docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/reset.sql
@@ -60,9 +77,7 @@ jobs:
           TEST_PHASE: after
           USER_A_EMAIL: user-a@example.invalid
           USER_B_EMAIL: user-b@example.invalid
-          USER_A_PASSWORD: ${{ secrets.LOCAL_USER_A_PASSWORD }}
-          USER_B_PASSWORD: ${{ secrets.LOCAL_USER_B_PASSWORD }}
         run: python tests/test_real_jwt_rpc.py
       - name: Cleanup isolated project only
-        if: always()
+        if: ${{ always() && env.RUNTIME_STARTED == 'true' }}
         run: docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans

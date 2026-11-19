@@ -10,4 +10,7 @@ for key in ("AUTH_URL", "REST_URL", "SUPABASE_URL"):
     value = os.getenv(key, "")
     if "wakmxrgmercaauqstrvj" in value or "supabase.co" in value:
         raise SystemExit("production endpoint rejected")
+for key in ("USER_A_PASSWORD", "USER_B_PASSWORD"):
+    if os.getenv(key, "").strip():
+        raise SystemExit(f"{key} must be supplied at runtime, not preconfigured")
 print("preflight passed")

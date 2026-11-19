@@ -1,0 +1,61 @@
+name: HealthON isolated syntax-only validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile Python sources
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/healthon-pycache
+        run: |
+          python --version
+          python -m py_compile \
+            harness/scripts/preflight.py \
+            harness/scripts/bootstrap_users.py \
+            tests/test_real_jwt_rpc.py
+
+      - name: Obtain verified actionlint
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_DIR: ${{ runner.temp }}/healthon-actionlint
+          ACTIONLINT_CHECKSUMS_SHA256: '433028cf0ba3c42163ea1a668dedce30fcdbe84fe912b1a5e288c006eab8a4f5'
+        run: |
+          set -euo pipefail
+          mkdir -p "$ACTIONLINT_DIR"
+          asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 \
+            "$base/$asset" -o "$ACTIONLINT_DIR/$asset"
+          curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 \
+            "$base/actionlint_${ACTIONLINT_VERSION}_checksums.txt" -o "$ACTIONLINT_DIR/checksums.txt"
+          printf '%s  %s\n' "$ACTIONLINT_CHECKSUMS_SHA256" "$ACTIONLINT_DIR/checksums.txt" | sha256sum -c -
+          grep -F "  $asset" "$ACTIONLINT_DIR/checksums.txt" > "$ACTIONLINT_DIR/asset.checksum"
+          (cd "$ACTIONLINT_DIR" && sha256sum -c asset.checksum)
+          tar -xzf "$ACTIONLINT_DIR/$asset" -C "$ACTIONLINT_DIR"
+          test -x "$ACTIONLINT_DIR/actionlint"
+          echo "ACTIONLINT_BIN=$ACTIONLINT_DIR/actionlint" >> "$GITHUB_ENV"
+
+      - name: Validate GitHub Actions workflows
+        run: |
+          "$ACTIONLINT_BIN" --version
+          "$ACTIONLINT_BIN" \
+            .github/workflows/isolated-jwt-validation.yml \
+            .github/workflows/syntax-only-validation.yml
+
+      - name: Validation summary
+        run: echo 'Python syntax and workflow validation completed.'
