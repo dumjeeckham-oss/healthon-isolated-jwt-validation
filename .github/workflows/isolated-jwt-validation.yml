@@ -1,0 +1,68 @@
+name: HealthON isolated JWT validation (2B-0-FIX2 candidate)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: healthon-phase3-3b-fix2
+  cancel-in-progress: true
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PROJECT: healthon-phase3-3b-fix2
+      FILE: harness/docker-compose.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Preflight
+        run: python harness/scripts/preflight.py
+      - name: Approval gate
+        run: test "${ALLOW_RUNTIME:-}" = true || { echo 'RUNTIME APPROVAL REQUIRED'; exit 2; }
+      - name: Generate runtime-only secrets
+        run: |
+          echo "JWT_SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" >> "$GITHUB_ENV"
+          echo "GOTRUE_OPERATOR_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" >> "$GITHUB_ENV"
+      - name: Compose config and start
+        run: docker compose -p "$PROJECT" -f "$FILE" config --quiet && docker compose -p "$PROJECT" -f "$FILE" up -d --wait
+      - name: Apply bootstrap and baseline function
+        run: |
+          docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/bootstrap.sql
+          docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/before.sql
+      - name: Bootstrap users
+        env:
+          AUTH_URL: http://127.0.0.1:55999
+          USER_A_EMAIL: user-a@example.invalid
+          USER_B_EMAIL: user-b@example.invalid
+          USER_A_PASSWORD: ${{ secrets.LOCAL_USER_A_PASSWORD }}
+          USER_B_PASSWORD: ${{ secrets.LOCAL_USER_B_PASSWORD }}
+        run: python harness/scripts/bootstrap_users.py
+      - name: Before JWT test
+        env:
+          AUTH_URL: http://127.0.0.1:55999
+          REST_URL: http://127.0.0.1:53000
+          TEST_PHASE: before
+          USER_A_EMAIL: user-a@example.invalid
+          USER_B_EMAIL: user-b@example.invalid
+          USER_A_PASSWORD: ${{ secrets.LOCAL_USER_A_PASSWORD }}
+          USER_B_PASSWORD: ${{ secrets.LOCAL_USER_B_PASSWORD }}
+        run: python tests/test_real_jwt_rpc.py
+      - name: Reset and assert clean state
+        run: docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/reset.sql
+      - name: Apply patched function
+        run: docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/after.sql
+      - name: After JWT test
+        env:
+          AUTH_URL: http://127.0.0.1:55999
+          REST_URL: http://127.0.0.1:53000
+          TEST_PHASE: after
+          USER_A_EMAIL: user-a@example.invalid
+          USER_B_EMAIL: user-b@example.invalid
+          USER_A_PASSWORD: ${{ secrets.LOCAL_USER_A_PASSWORD }}
+          USER_B_PASSWORD: ${{ secrets.LOCAL_USER_B_PASSWORD }}
+        run: python tests/test_real_jwt_rpc.py
+      - name: Cleanup isolated project only
+        if: always()
+        run: docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans
