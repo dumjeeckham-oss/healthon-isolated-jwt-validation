@@ -43,6 +43,8 @@ jobs:
           printf 'USER_A_PASSWORD=%s\nUSER_B_PASSWORD=%s\n' "$USER_A_PASSWORD" "$USER_B_PASSWORD" >> "$GITHUB_ENV"
           echo "::add-mask::$USER_A_PASSWORD"
           echo "::add-mask::$USER_B_PASSWORD"
+      - name: Mark isolated runtime attempt
+        run: echo 'RUNTIME_ATTEMPTED=true' >> "$GITHUB_ENV"
       - name: Compose config and start
         run: |
           docker compose -p "$PROJECT" -f "$FILE" config --quiet
@@ -79,5 +81,5 @@ jobs:
           USER_B_EMAIL: user-b@example.invalid
         run: python tests/test_real_jwt_rpc.py
       - name: Cleanup isolated project only
-        if: ${{ always() && env.RUNTIME_STARTED == 'true' }}
+        if: ${{ always() && env.RUNTIME_ATTEMPTED == 'true' }}
         run: docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans
