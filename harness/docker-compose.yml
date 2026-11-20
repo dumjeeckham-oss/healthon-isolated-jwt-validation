@@ -61,7 +61,6 @@ services:
       retries: 30
     networks: [isolated]
 networks:
-  isolated:
-    name: healthon_isolated_jwt_validation_network
+  isolated: {}
 volumes:
   healthon_isolated_jwt_validation_dbdata:

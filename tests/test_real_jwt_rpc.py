@@ -131,6 +131,16 @@ def main() -> int:
     if PHASE == "before":
         if cross_status not in {200, 201}:
             raise AssertionError(f"before cross-user control did not reproduce: HTTP {cross_status}")
+        user_b_after = read_own_rows(token_b, user_b)
+        if len(user_b_after) != 1:
+            raise AssertionError("before cross-user write did not create exactly one USER_B row")
+        row = user_b_after[0]
+        if (
+            str(row.get("user_id")) != user_b
+            or row.get("date") != TEST_DATE
+            or row.get("steps") != 2345
+        ):
+            raise AssertionError("before cross-user write did not persist expected USER_B values")
     else:
         code = cross_data.get("code") if isinstance(cross_data, dict) else None
         if cross_status not in {400, 401, 403} and code != "42501":

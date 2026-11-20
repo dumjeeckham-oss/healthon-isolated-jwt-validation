@@ -52,8 +52,8 @@ jobs:
           echo 'RUNTIME_STARTED=true' >> "$GITHUB_ENV"
       - name: Apply bootstrap and baseline function
         run: |
-          docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/bootstrap.sql
-          docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/before.sql
+          docker compose -p "$PROJECT" -f "$FILE" exec -T db psql --set ON_ERROR_STOP=1 -U postgres -d postgres < fixtures/bootstrap.sql
+          docker compose -p "$PROJECT" -f "$FILE" exec -T db psql --set ON_ERROR_STOP=1 -U postgres -d postgres < fixtures/before.sql
       - name: Bootstrap users
         env:
           AUTH_URL: http://127.0.0.1:55999
@@ -69,9 +69,9 @@ jobs:
           USER_B_EMAIL: user-b@example.invalid
         run: python tests/test_real_jwt_rpc.py
       - name: Reset and assert clean state
-        run: docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/reset.sql
+        run: docker compose -p "$PROJECT" -f "$FILE" exec -T db psql --set ON_ERROR_STOP=1 -U postgres -d postgres < fixtures/reset.sql
       - name: Apply patched function
-        run: docker compose -p "$PROJECT" -f "$FILE" exec -T db psql -U postgres -d postgres < fixtures/after.sql
+        run: docker compose -p "$PROJECT" -f "$FILE" exec -T db psql --set ON_ERROR_STOP=1 -U postgres -d postgres < fixtures/after.sql
       - name: After JWT test
         env:
           AUTH_URL: http://127.0.0.1:55999
