@@ -35,20 +35,75 @@ jobs:
           }
       - name: Generate runtime-only secrets
         run: |
-          echo "JWT_SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" >> "$GITHUB_ENV"
-          echo "GOTRUE_OPERATOR_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" >> "$GITHUB_ENV"
+          set -euo pipefail
+          set +x
+          JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          GOTRUE_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
           USER_A_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
           USER_B_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
+          test -n "$JWT_SECRET"
+          test -n "$GOTRUE_OPERATOR_TOKEN"
+          test -n "$USER_A_PASSWORD"
+          test -n "$USER_B_PASSWORD"
           test "$USER_A_PASSWORD" != "$USER_B_PASSWORD"
-          printf 'USER_A_PASSWORD=%s\nUSER_B_PASSWORD=%s\n' "$USER_A_PASSWORD" "$USER_B_PASSWORD" >> "$GITHUB_ENV"
+          echo "::add-mask::$JWT_SECRET"
+          echo "::add-mask::$GOTRUE_OPERATOR_TOKEN"
           echo "::add-mask::$USER_A_PASSWORD"
           echo "::add-mask::$USER_B_PASSWORD"
+          {
+            printf 'JWT_SECRET=%s\n' "$JWT_SECRET"
+            printf 'GOTRUE_OPERATOR_TOKEN=%s\n' "$GOTRUE_OPERATOR_TOKEN"
+            printf 'USER_A_PASSWORD=%s\n' "$USER_A_PASSWORD"
+            printf 'USER_B_PASSWORD=%s\n' "$USER_B_PASSWORD"
+          } >> "$GITHUB_ENV"
       - name: Mark isolated runtime attempt
         run: echo 'RUNTIME_ATTEMPTED=true' >> "$GITHUB_ENV"
       - name: Compose config and start
         run: |
+          set -euo pipefail
           docker compose -p "$PROJECT" -f "$FILE" config --quiet
+          set +e
           docker compose -p "$PROJECT" -f "$FILE" up -d --wait
+          compose_rc=$?
+          set -e
+          if [ "$compose_rc" -ne 0 ]; then
+            echo 'COMPOSE START FAILED; collecting redacted auth-migrate diagnostics'
+            diag_file="$(mktemp)"
+            docker compose -p "$PROJECT" -f "$FILE" logs --no-color --tail=100 auth-migrate > "$diag_file" 2>&1 || true
+            JWT_SECRET="$JWT_SECRET" GOTRUE_OPERATOR_TOKEN="$GOTRUE_OPERATOR_TOKEN" \
+              USER_A_PASSWORD="$USER_A_PASSWORD" USER_B_PASSWORD="$USER_B_PASSWORD" \
+              python - "$diag_file" <<'PY'
+          import os
+          import re
+          import sys
+
+          path = sys.argv[1]
+          secrets = [os.environ.get(name, '') for name in (
+              'JWT_SECRET', 'GOTRUE_OPERATOR_TOKEN',
+              'USER_A_PASSWORD', 'USER_B_PASSWORD',
+          )]
+          url_pattern = re.compile(r'(?i)(postgres(?:ql)?://)[^\s]+')
+          bearer_pattern = re.compile(r'(?i)(bearer\s+)[^\s]+')
+          token_pattern = re.compile(r'(?i)(token|secret|password|authorization)(\s*[:=]\s*)[^\s,]+')
+          try:
+              with open(path, encoding='utf-8', errors='replace') as stream:
+                  for index, line in enumerate(stream):
+                      if index >= 100:
+                          break
+                      safe = line.rstrip('\n')
+                      for value in secrets:
+                          if value:
+                              safe = safe.replace(value, '[REDACTED]')
+                      safe = url_pattern.sub(r'\1[REDACTED]', safe)
+                      safe = bearer_pattern.sub(r'\1[REDACTED]', safe)
+                      safe = token_pattern.sub(r'\1\2[REDACTED]', safe)
+                      print(safe)
+          except OSError:
+              print('AUTH-MIGRATE DIAGNOSTICS UNAVAILABLE')
+          PY
+            rm -f "$diag_file"
+            exit "$compose_rc"
+          fi
           echo 'RUNTIME_STARTED=true' >> "$GITHUB_ENV"
       - name: Apply bootstrap and baseline function
         run: |
