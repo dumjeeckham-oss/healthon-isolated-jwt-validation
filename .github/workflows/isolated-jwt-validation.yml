@@ -38,18 +38,18 @@ jobs:
           set -euo pipefail
           set +x
           JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
-          GOTRUE_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-          USER_A_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
-          USER_B_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
           test -n "$JWT_SECRET"
-          test -n "$GOTRUE_OPERATOR_TOKEN"
-          test -n "$USER_A_PASSWORD"
-          test -n "$USER_B_PASSWORD"
-          test "$USER_A_PASSWORD" != "$USER_B_PASSWORD"
           echo "::add-mask::$JWT_SECRET"
+          GOTRUE_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          test -n "$GOTRUE_OPERATOR_TOKEN"
           echo "::add-mask::$GOTRUE_OPERATOR_TOKEN"
+          USER_A_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
+          test -n "$USER_A_PASSWORD"
           echo "::add-mask::$USER_A_PASSWORD"
+          USER_B_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')"
+          test -n "$USER_B_PASSWORD"
           echo "::add-mask::$USER_B_PASSWORD"
+          test "$USER_A_PASSWORD" != "$USER_B_PASSWORD"
           {
             printf 'JWT_SECRET=%s\n' "$JWT_SECRET"
             printf 'GOTRUE_OPERATOR_TOKEN=%s\n' "$GOTRUE_OPERATOR_TOKEN"
@@ -67,41 +67,12 @@ jobs:
           compose_rc=$?
           set -e
           if [ "$compose_rc" -ne 0 ]; then
-            echo 'COMPOSE START FAILED; collecting redacted auth-migrate diagnostics'
-            diag_file="$(mktemp)"
-            docker compose -p "$PROJECT" -f "$FILE" logs --no-color --tail=100 auth-migrate > "$diag_file" 2>&1 || true
-            JWT_SECRET="$JWT_SECRET" GOTRUE_OPERATOR_TOKEN="$GOTRUE_OPERATOR_TOKEN" \
-              USER_A_PASSWORD="$USER_A_PASSWORD" USER_B_PASSWORD="$USER_B_PASSWORD" \
-              python - "$diag_file" <<'PY'
-          import os
-          import re
-          import sys
-
-          path = sys.argv[1]
-          secrets = [os.environ.get(name, '') for name in (
-              'JWT_SECRET', 'GOTRUE_OPERATOR_TOKEN',
-              'USER_A_PASSWORD', 'USER_B_PASSWORD',
-          )]
-          url_pattern = re.compile(r'(?i)(postgres(?:ql)?://)[^\s]+')
-          bearer_pattern = re.compile(r'(?i)(bearer\s+)[^\s]+')
-          token_pattern = re.compile(r'(?i)(token|secret|password|authorization)(\s*[:=]\s*)[^\s,]+')
-          try:
-              with open(path, encoding='utf-8', errors='replace') as stream:
-                  for index, line in enumerate(stream):
-                      if index >= 100:
-                          break
-                      safe = line.rstrip('\n')
-                      for value in secrets:
-                          if value:
-                              safe = safe.replace(value, '[REDACTED]')
-                      safe = url_pattern.sub(r'\1[REDACTED]', safe)
-                      safe = bearer_pattern.sub(r'\1[REDACTED]', safe)
-                      safe = token_pattern.sub(r'\1\2[REDACTED]', safe)
-                      print(safe)
-          except OSError:
-              print('AUTH-MIGRATE DIAGNOSTICS UNAVAILABLE')
-          PY
-            rm -f "$diag_file"
+            case "$compose_rc" in
+              ''|*[!0-9]*) echo 'COMPOSE_EXIT_CODE_UNAVAILABLE'; exit 1 ;;
+            esac
+            echo 'COMPOSE_START_FAILED'
+            printf 'COMPOSE_EXIT_CODE=%s\n' "$compose_rc"
+            echo 'AUTH_MIGRATE_DIAGNOSTIC_RESTRICTED'
             exit "$compose_rc"
           fi
           echo 'RUNTIME_STARTED=true' >> "$GITHUB_ENV"
